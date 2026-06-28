@@ -102,7 +102,7 @@ step_install_deps() {
         info "Storage already configured, skipping"
     fi
 
-    local packages=(proot-distro x11-repo termux-x11-nightly pulseaudio wget axel)
+    local packages=(proot-distro x11-repo termux-x11-nightly pulseaudio wget axel xz-utils)
     local failed=() count=0 total=${#packages[@]}
 
     for pkg in "${packages[@]}"; do
@@ -209,32 +209,82 @@ step_install_kali() {
 
     info "Extracting rootfs..."
     mkdir -p "$ROOTFS"
+    local extracted=0
 
-    if bsdtar -xpJf "$tarball" -C "$ROOTFS" --strip-components=1 2>/dev/null; then
-        ok "Rootfs extracted"
-    else
-        warn "bsdtar extraction had issues, trying alternate method..."
+    log "INFO" "Trying extraction method 1: bsdtar -xpJf (direct)"
+    if bsdtar -xpJf "$tarball" -C "$ROOTFS" --strip-components=1; then
+        extracted=1
+    fi
+
+    if [[ $extracted -eq 0 ]]; then
+        log "INFO" "Method 1 failed. Trying method 2: xz -dc | bsdtar"
         mkdir -p "${PREFIX}/var/lib/proot-distro/containers/kali"
-        local tmpdir="${PREFIX}/var/lib/proot-distro/containers/kali/_tmp"
-        mkdir -p "$tmpdir"
-        bsdtar -xpJf "$tarball" -C "$tmpdir" 2>/dev/null || {
-            error_ "Failed to extract rootfs"; exit 1
-        }
-        if [[ -d "${tmpdir}/kali-arm64" ]]; then
-            mv -f "${tmpdir}/kali-arm64"/* "$ROOTFS" 2>/dev/null || true
-            mv -f "${tmpdir}/kali-arm64"/.??* "$ROOTFS" 2>/dev/null || true
+        local tmpdir
+        tmpdir="$(mktemp -d)"
+        if xz -dc "$tarball" 2>>"$LOG_FILE" | bsdtar -xp -C "$tmpdir"; then
+            if [[ -d "${tmpdir}/kali-arm64" ]]; then
+                mv -f "${tmpdir}/kali-arm64"/* "$ROOTFS"/ 2>/dev/null || true
+                mv -f "${tmpdir}/kali-arm64"/.[!.]* "$ROOTFS"/ 2>/dev/null || true
+            else
+                mv -f "${tmpdir}"/* "$ROOTFS"/ 2>/dev/null || true
+                mv -f "${tmpdir}"/.[!.]* "$ROOTFS"/ 2>/dev/null || true
+            fi
+            extracted=1
+            ok "Rootfs extracted (xz-pipe method)"
         else
-            mv -f "${tmpdir}"/* "$ROOTFS" 2>/dev/null || true
-            mv -f "${tmpdir}"/.??* "$ROOTFS" 2>/dev/null || true
+            log "INFO" "Method 2 failed. tmpdir contents: $(ls -la "$tmpdir" 2>/dev/null | head -10)"
         fi
         rm -rf "$tmpdir"
-        ok "Rootfs extracted (alternate method)"
+    fi
+
+    if [[ $extracted -eq 0 ]]; then
+        log "INFO" "Method 2 failed. Trying method 3: xz -d + tar"
+        local tarfile
+        tarfile="$(mktemp)"
+        if xz -d "$tarball" --stdout > "$tarfile" 2>>"$LOG_FILE"; then
+            if bsdtar -xf "$tarfile" -C "$ROOTFS" --strip-components=1 2>>"$LOG_FILE"; then
+                extracted=1
+                ok "Rootfs extracted (xz-d + bsdtar method)"
+            fi
+        fi
+        rm -f "$tarfile"
+    fi
+
+    if [[ $extracted -eq 0 ]]; then
+        log "INFO" "All methods failed. Trying method 4: xz -d + manual copy"
+        local tarfile2
+        tarfile2="$(mktemp)"
+        local tmpdir2
+        tmpdir2="$(mktemp -d)"
+        if xz -d "$tarball" --stdout > "$tarfile2" 2>>"$LOG_FILE" && bsdtar -xf "$tarfile2" -C "$tmpdir2" 2>>"$LOG_FILE"; then
+            if [[ -d "${tmpdir2}/kali-arm64" ]]; then
+                mv -f "${tmpdir2}/kali-arm64"/* "$ROOTFS"/ 2>/dev/null || true
+                mv -f "${tmpdir2}/kali-arm64"/.[!.]* "$ROOTFS"/ 2>/dev/null || true
+            else
+                mv -f "${tmpdir2}"/* "$ROOTFS"/ 2>/dev/null || true
+                mv -f "${tmpdir2}"/.[!.]* "$ROOTFS"/ 2>/dev/null || true
+            fi
+            extracted=1
+            ok "Rootfs extracted (manual copy method)"
+        fi
+        rm -f "$tarfile2"
+        rm -rf "$tmpdir2"
+    fi
+
+    if [[ $extracted -eq 0 ]]; then
+        error_ "All extraction methods failed. Check log: ${LOG_FILE}"
+        error_ "File type: $(file -b "$tarball" 2>/dev/null | head -1)"
+        error_ "Try manually: xz -dc '${tarball}' | bsdtar -xp -C '${ROOTFS}' --strip-components=1"
+        exit 1
     fi
 
     rm -f "$tarball"
 
     if [[ ! -f "${ROOTFS}/etc/os-release" ]]; then
-        error_ "Rootfs extraction incomplete — missing /etc/os-release"; exit 1
+        error_ "Rootfs extraction incomplete — missing /etc/os-release"
+        error_ "Contents of ${ROOTFS}:"
+        ls -la "$ROOTFS" 2>/dev/null | head -20
+        exit 1
     fi
 
     info "Creating proot-distro configuration..."
