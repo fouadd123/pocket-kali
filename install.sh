@@ -207,12 +207,12 @@ step_install_kali() {
     size=$(du -h "$tarball" | awk '{print $1}')
     info "Downloaded: ${size}"
 
-    info "Extracting rootfs..."
+    info "Extracting rootfs (excluding unprivileged device nodes)..."
     mkdir -p "$ROOTFS"
     local extracted=0
 
-    log "INFO" "Trying extraction method 1: bsdtar -xpJf (direct)"
-    if bsdtar -xpJf "$tarball" -C "$ROOTFS" --strip-components=1; then
+    log "INFO" "Trying extraction method 1: bsdtar -xpJf (direct with dev exclusions)"
+    if bsdtar --exclude='dev/*' --exclude='sys/*' --exclude='proc/*' -xpJf "$tarball" -C "$ROOTFS" --strip-components=1 2>>"$LOG_FILE"; then
         extracted=1
     fi
 
@@ -221,7 +221,7 @@ step_install_kali() {
         mkdir -p "${PREFIX}/var/lib/proot-distro/containers/kali"
         local tmpdir
         tmpdir="$(mktemp -d)"
-        if xz -dc "$tarball" 2>>"$LOG_FILE" | bsdtar -xp -C "$tmpdir"; then
+        if xz -dc "$tarball" 2>>"$LOG_FILE" | bsdtar --exclude='dev/*' --exclude='sys/*' --exclude='proc/*' -xp -C "$tmpdir" 2>>"$LOG_FILE"; then
             if [[ -d "${tmpdir}/kali-arm64" ]]; then
                 mv -f "${tmpdir}/kali-arm64"/* "$ROOTFS"/ 2>/dev/null || true
                 mv -f "${tmpdir}/kali-arm64"/.[!.]* "$ROOTFS"/ 2>/dev/null || true
@@ -242,7 +242,7 @@ step_install_kali() {
         local tarfile
         tarfile="$(mktemp)"
         if xz -d "$tarball" --stdout > "$tarfile" 2>>"$LOG_FILE"; then
-            if bsdtar -xf "$tarfile" -C "$ROOTFS" --strip-components=1 2>>"$LOG_FILE"; then
+            if bsdtar --exclude='dev/*' --exclude='sys/*' --exclude='proc/*' -xf "$tarfile" -C "$ROOTFS" --strip-components=1 2>>"$LOG_FILE"; then
                 extracted=1
                 ok "Rootfs extracted (xz-d + bsdtar method)"
             fi
@@ -256,7 +256,7 @@ step_install_kali() {
         tarfile2="$(mktemp)"
         local tmpdir2
         tmpdir2="$(mktemp -d)"
-        if xz -d "$tarball" --stdout > "$tarfile2" 2>>"$LOG_FILE" && bsdtar -xf "$tarfile2" -C "$tmpdir2" 2>>"$LOG_FILE"; then
+        if xz -d "$tarball" --stdout > "$tarfile2" 2>>"$LOG_FILE" && bsdtar --exclude='dev/*' --exclude='sys/*' --exclude='proc/*' -xf "$tarfile2" -C "$tmpdir2" 2>>"$LOG_FILE"; then
             if [[ -d "${tmpdir2}/kali-arm64" ]]; then
                 mv -f "${tmpdir2}/kali-arm64"/* "$ROOTFS"/ 2>/dev/null || true
                 mv -f "${tmpdir2}/kali-arm64"/.[!.]* "$ROOTFS"/ 2>/dev/null || true
@@ -274,7 +274,7 @@ step_install_kali() {
     if [[ $extracted -eq 0 ]]; then
         error_ "All extraction methods failed. Check log: ${LOG_FILE}"
         error_ "File type: $(file -b "$tarball" 2>/dev/null | head -1)"
-        error_ "Try manually: xz -dc '${tarball}' | bsdtar -xp -C '${ROOTFS}' --strip-components=1"
+        error_ "Try manually: xz -dc '${tarball}' | bsdtar --exclude='dev/*' -xp -C '${ROOTFS}' --strip-components=1"
         exit 1
     fi
 
